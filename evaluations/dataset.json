@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "description": "Deterministic acceptance cases for the supplier-shortfall purchasing workflow.",
+  "cases": [
+    {"id": "supplier-shortfall", "expected_decision": "supplemental_purchase", "expected_tools": ["get_situation", "inspect_open_purchase_order", "get_inventory_and_demand", "find_alternate_supplier", "check_constraints", "create_draft_order"], "must_respect": ["minimum_order", "pack_multiple", "budget", "storage_capacity"], "requires_approval": true},
+    {"id": "inventory-covers-demand", "expected_decision": "no_action", "expected_tools": ["get_situation", "inspect_open_purchase_order", "get_inventory_and_demand", "find_alternate_supplier", "check_constraints"], "must_respect": [], "requires_approval": false},
+    {"id": "budget-constrained", "expected_decision": "escalate", "expected_tools": ["get_situation", "inspect_open_purchase_order", "get_inventory_and_demand", "find_alternate_supplier", "check_constraints"], "must_respect": ["budget"], "requires_approval": true},
+    {"id": "storage-constrained", "expected_decision": "escalate", "expected_tools": ["get_situation", "inspect_open_purchase_order", "get_inventory_and_demand", "find_alternate_supplier", "check_constraints"], "must_respect": ["storage_capacity"], "requires_approval": true}
+  ]
+}
