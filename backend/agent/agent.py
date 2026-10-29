@@ -6,8 +6,13 @@ import time
 from uuid import uuid4
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware, wrap_model_call
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain.agents.middleware import (
+    ModelCallLimitMiddleware,
+    ToolCallLimitMiddleware,
+    after_model,
+    wrap_model_call,
+)
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from .llm import build_model
 from .policy import ACTIONABLE, POLICY_VERSION, REQUIRED_READS
@@ -48,12 +53,39 @@ class PurchasingAgent:
                 )
             )
 
+        completion_recoveries = 0
+
+        @after_model(can_jump_to=["model"])
+        def require_complete_investigation(state, runtime):
+            nonlocal completion_recoveries
+            last = state["messages"][-1]
+            incomplete = tools.decision is None or (
+                tools.decision["decision"] in ACTIONABLE and tools.draft is None
+            )
+            if (
+                isinstance(last, AIMessage)
+                and not last.tool_calls
+                and incomplete
+                and completion_recoveries < 2
+            ):
+                completion_recoveries += 1
+                return {
+                    "messages": [
+                        HumanMessage(
+                            content="[Workflow gate] Investigation is incomplete. Continue using the currently offered tools; do not give a final answer until the policy check and any required draft are complete."
+                        )
+                    ],
+                    "jump_to": "model",
+                }
+            return None
+
         runtime = create_agent(
             model=model,
             tools=tools.build(),
             system_prompt=SYSTEM_PROMPT,
             middleware=[
                 gated_tool_visibility,
+                require_complete_investigation,
                 ModelCallLimitMiddleware(run_limit=10, exit_behavior="end"),
                 ToolCallLimitMiddleware(run_limit=16, exit_behavior="end"),
             ],
@@ -101,6 +133,7 @@ class PurchasingAgent:
             "error": error,
             "metadata": {
                 "framework": "langchain.create_agent",
+                "completion_recoveries": completion_recoveries,
                 "provider": self.provider,
                 "model": os.getenv("AGENT_MODEL", "gpt-oss:20b-cloud")
                 if self.provider == "ollama"

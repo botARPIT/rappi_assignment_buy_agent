@@ -12,7 +12,7 @@ async function request(url, options={}) {
   return data;
 }
 const selectedCase=()=>cases.find(c=>c.id===$('case-select').value);
-function renderCase() {
+function renderCaseSummary() {
   const c=selectedCase();if(!c)return;
   const feature={recommendation_review:'Recommendation review',supplier_shortfall:'Supplier shortfall',demand_change:'Demand change'}[c.feature];
   $('case-summary').innerHTML=`<div class="case-title">${esc(c.product)}</div><span class="case-tag">${esc(feature)}</span><div class="facts">
@@ -22,6 +22,9 @@ function renderCase() {
     <div class="fact"><small>BUDGET REMAINING</small><b>${money(c.budget_cents/100)}</b></div><div class="fact"><small>STORAGE CAPACITY</small><b>${c.storage_capacity} units</b></div>
     ${c.recommended_quantity!==null?`<div class="fact"><small>SYSTEM RECOMMENDATION</small><b>${c.recommended_quantity} units</b></div>`:''}
     ${c.additional_incoming.length?`<div class="fact"><small>ADDITIONAL CONFIRMED</small><b>${c.additional_incoming.reduce((sum,r)=>sum+r.quantity,0)} units</b></div>`:''}</div>`;
+}
+function renderCase() {
+  renderCaseSummary();
   activeResult=null;$('result').classList.add('hidden');$('empty-state').classList.remove('hidden');
   $('trace').className='trace-empty';$('trace').textContent='Run an investigation to see which systems the agent consulted.';
   $('trace-count').textContent='0 calls';refreshEvents();
@@ -59,7 +62,7 @@ async function approve(){
     const result=await request(`/api/drafts/${encodeURIComponent(activeResult.draft.id)}/approve`,{method:'POST',body:JSON.stringify({approved:true,outcome:$('supplier-outcome').value})});
     const valid=result.validation.valid;
     $('validation').innerHTML=`<div class="validation ${valid?'ok':'fail'}"><b>${valid?'Validated':'Buyer review required'} · ${esc(result.validation.status)}</b><br>${esc(result.validation.message)}<br>Order ${esc(result.action.id)} · ${result.action.confirmed_quantity}/${result.action.requested_quantity} units confirmed${result.follow_up?`<br>${esc(result.follow_up.message)} Remaining gap: ${result.follow_up.remaining_gap ?? 'unknown'} units.`:''}</div>`;
-    cases=await request('/api/cases');
+    cases=await request('/api/cases');renderCaseSummary();
   }catch(err){$('validation').innerHTML=`<div class="validation fail">${esc(err.message)}</div>`;}
   finally{busy=false;$('case-select').disabled=false;$('analyze-button').disabled=false;$('reset-button').disabled=false;refreshEvents();}
 }
