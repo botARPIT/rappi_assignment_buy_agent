@@ -9,7 +9,7 @@
 <body>
   <header class="topbar">
     <a class="brand" href="/"><span class="brand-mark">r</span><span>buyer<span class="brand-muted">desk</span></span></a>
-    <div class="topbar-right"><span class="live-dot"></span> Mock purchasing environment <span class="avatar">AM</span></div>
+    <div class="topbar-right"><span class="live-dot"></span> <span id="environment-label">Connecting agent…</span> <span class="avatar">AM</span></div>
   </header>
   <main class="shell">
     <section class="intro">
@@ -18,12 +18,12 @@
     </section>
     <section class="workspace">
       <aside class="case-panel">
-        <div class="section-label">DEMO SITUATION</div>
+        <div class="section-label">PURCHASING SITUATION</div>
         <label for="case-select">Choose a scenario</label>
         <select id="case-select"></select>
         <div id="case-summary" class="case-summary"></div>
         <button id="analyze-button" class="button primary wide">Investigate situation <span>→</span></button>
-        <div class="panel-foot"><span class="shield">◇</span> Agent recommendations are rechecked before execution.</div>
+        <button id="reset-button" class="text-button reset-button">Reset this demo situation ↺</button><div class="panel-foot"><span class="shield">◇</span> Agent recommendations are rechecked before execution.</div>
       </aside>
       <section class="results" aria-live="polite">
         <div id="empty-state" class="empty-state"><div class="empty-orbit"><span>✳</span></div><div class="section-label">READY WHEN YOU ARE</div><h2>Start with a situation.</h2><p>The agent will gather order, inventory, supplier, and constraint data before recommending what to do.</p><div class="empty-steps"><span>01 <b>Investigate</b></span><i></i><span>02 <b>Decide</b></span><i></i><span>03 <b>Validate</b></span></div></div>
@@ -32,10 +32,10 @@
     </section>
     <section class="lower-grid">
       <div class="lower-card"><div class="card-heading"><div><div class="section-label">AGENT ACTIVITY</div><h3>Tool trace</h3></div><span id="trace-count" class="count-pill">0 calls</span></div><div id="trace" class="trace-empty">Run an investigation to see which systems the agent consulted.</div></div>
-      <div class="lower-card"><div class="card-heading"><div><div class="section-label">QUALITY CHECK</div><h3>Scenario evaluations</h3></div><button id="eval-button" class="text-button">Run evaluation ↗</button></div><div id="eval-results" class="eval-empty">Deterministic acceptance cases cover decisions, tool use, approvals, and purchasing constraints.</div></div>
+      <div class="lower-card"><div class="card-heading"><div><div class="section-label">QUALITY CHECK</div><h3>Scenario evaluations</h3></div><button id="eval-button" class="text-button">Run DeepEval ↗</button></div><div id="eval-results" class="eval-empty">DeepEval checks three workflows, policy constraints, tool use, and supplier feedback. The browser runs the scripted agent suite; live model evaluations run from the CLI.</div></div>
     </section>
     <section class="audit-card"><div><div class="section-label">AUDIT TRAIL</div><h3>Recent actions</h3></div><div id="events" class="events-empty">No actions recorded in this session.</div></section>
-    <footer>RAPPI BUYER AGENT <span>·</span> LOCAL DEMO <span>·</span> MOCK DATA</footer>
+    <footer>RAPPI BUYER AGENT <span>·</span> LANGCHAIN + DEEPEVAL <span>·</span> MOCK DATA</footer>
   </main>
   <script src="/static/app.js"></script>
 </body>
