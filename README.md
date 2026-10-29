@@ -1,86 +1,151 @@
 # Rappi AI Purchasing Agent
 
-A runnable, full-stack buyer workflow demo for supplier shortfalls. It gathers purchasing evidence through tools, applies a deterministic policy, requests buyer approval before an order, and validates the supplier's response. All data and supplier responses are mocked; the application runs without an LLM key or third-party Python packages.
+![Buyer workspace](docs/images/purchasing-workspace.png)
 
-## Run locally
+A full-stack purchasing application using **LangChain `create_agent`**, **ChatOllama**, deterministic policy gates, SQLite, FastAPI, and **DeepEval**. The agent selects evidence tools and prepares a policy-authorized draft. A buyer approves the purchase; the application checks the supplier's actual response and persists any required follow-up.
 
-Requires Python 3.10 or newer.
+## Setup
 
-```bash
-python3 -m backend.server
-```
-
-Open <http://127.0.0.1:8000>. Select a situation and choose **Investigate situation**. For a recommended order, approve it to simulate supplier confirmation, or choose **Simulate supplier rejection** to see the failed-action feedback path. The app stores action and validation events in `.data/purchasing.sqlite3`.
-
-Run the deterministic evaluation scenarios with:
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Dependencies are pinned in `uv.lock`.
 
 ```bash
-python3 -m evaluations.run_eval
+uv sync
+cp .env.example .env
+uv run python -m backend.server
 ```
 
-The app binds to localhost on port 8000. The `.env.example` is included as the extension point for optional external services; the demo has no required environment variables.
+Open <http://127.0.0.1:8000>. The default agent uses Ollama at `http://127.0.0.1:11434` with the tool-capable `gpt-oss:20b-cloud` model. Install [Ollama](https://ollama.com/), start its service, and authenticate if your selected model uses Ollama cloud. You can change `AGENT_MODEL` and `OLLAMA_BASE_URL` in `.env`. A local model must support tool calling.
 
-## Implemented scenario and mock data
+For a reproducible development demo without any model service:
 
-The end-to-end scenario is a 500-unit open order whose supplier confirms only 250. The agent checks on-hand inventory, daily demand, supplier lead time, safety-stock coverage, open-order confirmation, alternate supplier availability and terms, remaining budget, and storage capacity. Four curated cases exercise a supplemental order, no action when available supply covers demand, budget escalation, and storage escalation.
+```bash
+AGENT_PROVIDER=scripted uv run python -m backend.server
+```
 
-The purchasing need is defined as demand over the incumbent supplier's lead time plus safety days. Available coverage is on-hand inventory plus supplier-confirmed incoming units. If there is a gap, the policy rounds the top-up to the alternate supplier's minimum and pack multiple, then checks capacity, budget, and storage. It does not silently shrink the order to fit a constraint; it escalates with reason codes.
+This **scripted test mode** executes the same LangChain graph, real tool implementations, policy, database, and approval path. It is explicitly labelled in the UI and reports. It does not demonstrate model reasoning. Live Ollama runs are reported separately.
+
+## Three assignment features
+
+| Feature | Investigation and decision | End-to-end action |
+|---|---|---|
+| Purchase recommendation review | Recheck an 800-unit recommendation against inventory, confirmed incoming supply, forecast, supplier rules, budget, and storage. Accept, modify, reject, or investigate. | Prepare the corrected order, obtain buyer approval, place it with the mock supplier, and validate confirmation. |
+| Supplier shortfall | Investigate an existing 500-unit order whose supplier confirms only 250. Determine whether alternate supply is actually needed. | Prepare a supplemental order or choose no action/escalation. Handle full confirmation, rejection, or partial fulfilment. |
+| Demand / forecast change | Compare the old forecast with recent sales, checking freshness and at least three days of observations. Recalculate coverage with the existing order. | Adjust the purchasing plan through the same approval, execution, and validation flow. |
+
+Purchasing constraints from the fourth assignment scenario apply across all three features. Two extra demo cases demonstrate budget and storage blocks.
+
+### Demo journey
+
+1. Select **Review a recommendation to buy 800 units** and investigate. The policy changes it to 150 units because confirmed inventory already covers part of the planning target.
+2. Inspect the policy evidence and expand individual tool calls. The agent explanation is shown separately from the canonical policy result.
+3. Approve the draft with **Confirm full quantity**. The mock purchase is persisted, the budget is debited once, and confirmed incoming stock is updated.
+4. Investigate again: the new incoming order is included, preventing duplicate buying.
+5. Reset the demo situation and choose **Reject the order** or **Confirm half the quantity** before approval. The feedback loop records the actual response, recalculates the remaining gap, and creates a buyer-review event.
+6. Try the budget and storage cases. Neither exposes an executable order.
+
+Reset restores that fixture and advances its revision. Any previously issued draft becomes stale. The mock response dropdown simulates supplier behaviour; the buyer's approval and supplier acceptance are distinct events.
 
 ## Architecture
 
 ```mermaid
-flowchart LR
-    Buyer[Buyer UI] --> API[HTTP API]
-    API --> Agent[Agent workflow]
-    Agent --> Tools[Purchasing tools]
-    Tools --> Data[Mock purchasing data]
-    Agent --> Policy[Deterministic policy]
-    Policy --> Decision[Decision + evidence + reason codes]
-    Decision -->|top-up candidate| Draft[SQLite draft]
-    Buyer -->|approve| Gate[Recheck policy + approval gate]
-    Gate --> Action[Mock supplier order action]
-    Action --> Validate[Supplier response validation]
-    Validate --> Audit[SQLite audit trail]
-    Eval[Versioned scenarios] --> Runner[Deterministic evaluation runner]
-    Runner --> Agent
+flowchart TD
+    UI[Buyer workspace] --> API[FastAPI]
+    API --> Agent[LangChain create_agent + ChatOllama]
+    Agent --> Reads[Inventory / open orders / demand / supplier tools]
+    Reads --> DB[(SQLite operational state)]
+    Agent --> Evidence[Evidence completeness gate]
+    Evidence --> Policy[Pure purchasing policy]
+    Policy --> Draft[Draft authorized by decision ID]
+    Draft --> Buyer[Explicit buyer approval]
+    Buyer --> Fresh[Recheck state revision and full policy]
+    Fresh --> Tx[Atomic idempotent order transaction]
+    Tx --> Supplier[Mock supplier response]
+    Supplier --> Validation[Validate quantity, price and supplier]
+    Validation --> DB
+    Validation --> Followup[Reassess and request buyer review on mismatch]
+    Goldens[Versioned goldens] --> DeepEval[DeepEval evaluator]
+    DeepEval --> Agent
+    DeepEval --> Report[Metric scores + reasons + model and policy metadata]
 ```
 
-### Responsibility boundaries
+The architecture carries forward `ref_agent`'s agent, tools, policy, and evaluation boundaries. Here, the model uses tools to investigate and explain; deterministic code computes the purchase quantity and authorizes side effects.
 
-- `backend/agent/agent.py` orchestrates the investigation and returns the recommendation, trace, and any approval draft.
-- `backend/agent/tools.py` exposes the data lookup, constraint lookup, draft, execution, and validation operations. Tool calls are captured for inspection.
-- `backend/agent/policy.py` computes coverage and authorizes a suggested quantity. The order action is never authorized by model-generated prose.
-- `backend/store.py` persists draft state and auditable events in SQLite. A draft can only be executed while awaiting approval; repeated execution is rejected.
-- `backend/server.py` serves the UI and JSON endpoints. It reruns the policy before approval and blocks execution if the recommendation has changed.
-- `frontend/` provides the buyer-facing scenario, evidence, activity trace, decision, approval, validation, and evaluation views.
+- `backend/agent/agent.py`: LangChain runtime, per-run tool state, model/tool call limits, bounded recovery for premature model completion, canonical result, trace, and run metadata.
+- `backend/agent/llm.py`: real ChatOllama integration and a separately labelled scripted test model.
+- `backend/agent/tools.py`: evidence lookups, policy evaluation, and draft preparation. The LLM has **no purchase execution tool**.
+- `backend/agent/policy.py`: coverage, supplier selection, arrival timing, constraint enforcement, and authorization comparison.
+- `backend/store.py`: operational state, drafts, supplier outcomes, audit trail, and atomic approval transaction.
+- `backend/supplier.py`: replaceable mock supplier API and independent response validation. Unexpected price, supplier or arrival terms are quarantined from local budget and stock commitments.
+- `backend/server.py`: validated HTTP requests, UI, human approval/rejection, demo reset, and evaluation endpoint.
+- `evaluations/`: versioned goldens, DeepEval metrics, optional LLM judge, and one runner.
 
-The orchestration is intentionally deterministic and self-contained for a reproducible demo. This follows the useful `ref_agent` boundary: an agent coordinates tools and explains the result, while business rules control eligibility and side effects. Purchasing quantities, constraints, approval, and validation are hard-coded as auditable policy rather than delegated to an unconstrained LLM. A hosted LLM can later be added for free-form request interpretation or explanation without changing the policy authorization boundary.
+## Gated policy layers
 
-## Decisions and actions
+1. **Evidence gate:** stage middleware exposes only the tools allowed at the current stage and supplies a matching system instruction. All four evidence tools must be read before the policy tool returns a decision ID. Missing, invalid, stale, or insufficient evidence causes investigation.
+2. **Business policy gate:** calculate coverage, round to supplier minimum and pack size, then enforce availability, capacity, budget, storage, and arrival timing. Quantities and money are validated integers; currency calculations use cents.
+3. **Draft gate:** the model can pass only a policy-issued decision ID. It cannot supply a purchase quantity, arbitrary amount, or buyer approval. Drafts are deduplicated by case and revision.
+4. **Buyer gate:** execution requires an explicit boolean approval in the API. The buyer can reject a draft without creating an order.
+5. **Execution gate:** inside a SQLite write transaction, recompute policy and compare supplier, quantity, price, cost, ETA, revision, and policy version. Reject stale drafts. Repeated or concurrent approvals return the same order rather than spending twice.
+6. **Feedback gate:** compare the supplier-confirmed quantity, price, and identity with the approved order. Rejections and partial confirmations remain unsuccessful validations. Persist their actual financial/stock effect and a reassessed gap requiring buyer review.
 
-The policy returns one of:
+### Explicit domain assumptions
 
-- `supplemental_purchase`: a top-up fits supplier minimum/pack rules, budget, and storage. It creates a draft but does not place an order.
-- `no_action`: current stock plus confirmed incoming supply covers the target window.
-- `escalate`: supply is insufficient but an action is blocked, for example by budget or storage. No order is created.
+- Each demo situation is an isolated scenario with its own purchasing budget and storage envelope; cases can represent alternative versions of the same SKU. The budget is already net of existing order commitments. It is not a shared warehouse allocation optimizer.
+- The planning target is effective daily demand × (14-day horizon + 2 safety days). Standard workflows use forecast demand; the demand-change workflow uses the higher of forecast and sufficiently evidenced recent sales.
+- Demand freshness uses a supplied mock feed age; a live adapter would calculate it from timestamps. Only confirmed incoming units within the horizon count toward coverage. Daily projections catch stockouts that occur before deliveries, even if total units would eventually be enough.
+- Supplier minimum and pack rules are purchase constraints. A partial supplier confirmation is an unexpected outcome to validate, rather than a new order that bypasses those rules.
+- Storage is conservative: on-hand plus all committed incoming stock plus a proposed order must fit the configured capacity. No consumption-based storage optimization is assumed.
+- No automatic retries place new orders after supplier rejection. The system reassesses the actual state and requires a new buyer decision.
 
-The buyer must approve a draft. Before executing it, the API checks that the case still yields the same supplier, quantity, and actionable decision. The mock supplier then either confirms or rejects the order. Validation records the actual result; a rejection stays a failed outcome and gives the buyer a reassessment path.
+## DeepEval flow
 
-## Evaluation approach
+```bash
+# Repeatable LangChain graph + policy + feedback checks, with no network model calls
+uv run python -m evaluations.run_eval --output .data/evals-scripted.json
 
-`evaluations/dataset.json` is versioned and lists expected decisions, required tool calls, purchasing constraints, and approval expectations. `evaluations/run_eval.py` evaluates each scenario with deterministic checks for decision correctness, information gathering, side-effect boundaries, approval, and constraints. It also runs one successful supplier-confirmation round trip and one rejected-order round trip to check the feedback loop.
+# Real ChatOllama tool use on all 14 versioned scenarios
+uv run python -m evaluations.run_eval --provider ollama --output .data/evals-live.json
 
-The evaluation is intentionally not an LLM judge: these outcomes are exact business contracts. It reports per-case and per-check pass/fail, and exits nonzero if any criterion fails. The front end calls the same runner so the demo can show the evaluation results.
+# Add a real LLM judge for the explanations of the three core features
+uv run python -m evaluations.run_eval --provider ollama --judge \
+  --cases review-modify supplier-shortfall demand-spike \
+  --output .data/evals-live-judge.json
+```
 
-## API
+The runner calls DeepEval `evaluate()` over actual agent outputs. Four custom `BaseMetric` implementations check decision correctness against independently specified expected outcomes, evidence-before-policy ordering, purchasing and approval invariants, and actual supplier feedback. DeepEval's built-in `ToolCorrectnessMetric` checks required tool selection. Domain checks additionally reject duplicate or unauthorized calls and require evidence before policy evaluation; the four independent evidence reads may occur in any order. Those five metrics are release contracts and do not invoke a judge model.
 
-- `GET /api/cases` — curated mock purchasing situations
-- `POST /api/agent/run` with `{"case_id":"supplier-shortfall"}` — investigate and return decision, evidence, tool trace, and optional draft
-- `POST /api/drafts/{draft_id}/approve` with `{}` — approve, execute, and validate a draft
-- `POST /api/drafts/{draft_id}/approve` with `{"simulate_failure":true}` — exercise supplier rejection and validation
-- `GET /api/events?case_id=supplier-shortfall` — recent persisted audit events
-- `GET /api/evals` — run and return the deterministic evaluation report
+`--judge` adds `GEval` for buyer explanation quality using `DEEPEVAL_JUDGE_MODEL`. The judge receives operational evidence, the actual draft, and the authorized decision, so supported order details are not misclassified as hallucinations. Judge scores are diagnostic; their threshold is not a calibrated production release gate. Deterministic safety checks remain mandatory.
 
-## Current boundaries
+The dataset covers accept/modify/reject, all three features, no-op buying, budget/storage blocks, stale demand, insufficient sales history, supplier rejection and partial fulfilment, arrival timing, and injected instructions in operational text. Each case runs against isolated SQLite state. Reports include per-metric scores, thresholds, reasons, actual tool traces, provider/model, prompt hash, policy/dataset versions, and execution time. The runner exits nonzero when a measured criterion fails. The UI's **Run DeepEval** button runs the same scripted suite.
 
-This assignment demo focuses on supplier shortfall and purchasing constraints. Data is static mock data, supplier confirmation is simulated, and the policy uses a single coverage horizon. It does not connect to a live ERP, forecast service, or supplier system. The other assignment scenarios can be added as separate workflows sharing the same tool, policy, approval, audit, and evaluation boundaries.
+## Tests
+
+```bash
+uv run playwright install chromium
+uv run pytest
+uv run ruff check backend evaluations tests
+node --check frontend/app.js
+```
+
+Tests exercise the three actual LangChain workflows; policy boundaries; forged authorization; missing buyer approval; stale price, budget, demand and ETA; concurrent approvals across database connections; restart persistence; supplier rejection and partial confirmation; malformed HTTP requests; intentionally broken outputs against the evaluator; and real Chromium buyer journeys on desktop and mobile. The automated browser suite uses the scripted model. Live model evidence is produced by the separate DeepEval commands above.
+
+Checked-in verification results are in `evaluations/reports/` and `docs/VERIFICATION.md`. Full reports are generated under ignored `.data/`.
+
+## API and operational data
+
+FastAPI's interactive schema is at <http://127.0.0.1:8000/docs>.
+
+- `GET /health` — model provider and framework
+- `GET /api/cases` — current persisted purchasing situations
+- `POST /api/agent/run` with `{"case_id":"supplier-shortfall"}` — model investigation, canonical decision, trace, and optional draft
+- `POST /api/drafts/{id}/approve` with `{"approved":true,"outcome":"confirmed"}` — buyer gate, transaction, and validation; mock outcomes also include `rejected` and `partial`
+- `POST /api/drafts/{id}/reject` — buyer rejection without purchase
+- `GET /api/events?case_id=supplier-shortfall` — persisted audit events
+- `POST /api/cases/{id}/reset` — reset a demo fixture and invalidate older drafts
+- `GET /api/evals` — run the scripted DeepEval suite
+
+SQLite persists data in `.data/purchasing-v2.sqlite3`. The demo binds to localhost and uses a mock buyer identity. Production authentication, a live ERP/supplier adapter, a shared multi-product budget allocator, and transactional integration with external suppliers are outside this assignment scope. Cloud models require network availability; unavailable models fail closed with investigation guidance.
+
+## Framework references
+
+[LangChain agent API](https://reference.langchain.com/python/langchain/agents/factory/create_agent), [DeepEval custom metrics](https://deepeval.com/docs/metrics-custom), and [DeepEval tool correctness](https://deepeval.com/docs/metrics-tool-correctness).

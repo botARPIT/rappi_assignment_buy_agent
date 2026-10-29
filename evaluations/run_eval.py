@@ -1,76 +1,193 @@
-"""Run deterministic scenario acceptance checks without an LLM or credentials."""
+"""Run actual LangChain agents through DeepEval and save reproducible evidence."""
 
+import argparse
 import json
+import os
 import tempfile
+from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
+
+os.environ.setdefault("DEEPEVAL_TELEMETRY_OPT_OUT", "YES")
+
+from deepeval import evaluate
+from deepeval.evaluate import AsyncConfig, CacheConfig, DisplayConfig
+from deepeval.metrics import GEval, ToolCorrectnessMetric
+from deepeval.test_case import LLMTestCase, SingleTurnParams, ToolCall
+from dotenv import load_dotenv
 
 from backend.agent.agent import PurchasingAgent
 from backend.agent.data import get_cases
+from backend.agent.policy import ACTIONABLE, POLICY_VERSION
 from backend.store import Store
-
+from evaluations.metrics import OllamaJudge, PurchasingContractMetric
 
 ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT / ".env")
 
 
-def run():
+def merge_patch(target, patch):
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            merge_patch(target[key], value)
+        else:
+            target[key] = deepcopy(value)
+
+
+def run(provider="scripted", judge=False, case_ids=None, output_path=None):
     dataset = json.loads((ROOT / "evaluations/dataset.json").read_text())
-    results = []
-    with tempfile.TemporaryDirectory() as temp_dir:
-        agent = PurchasingAgent(get_cases(), Store(Path(temp_dir) / "eval.sqlite3"))
-        for golden in dataset["cases"]:
-            output = agent.investigate_shortfall(golden["id"])
-            decision = output["decision"]
-            tool_names = [step["tool"] for step in output["trace"]]
-            case = agent.cases[golden["id"]]
-            evidence = decision["evidence"]
-            facts = {
-                "minimum_order": evidence.get("proposed_units", 0) >= case["alternate_supplier"]["minimum_order"],
-                "pack_multiple": evidence.get("proposed_units", 0) % case["alternate_supplier"]["pack_multiple"] == 0,
-                "budget": evidence.get("estimated_cost", 0) <= case["budget_remaining"],
-                "storage_capacity": evidence.get("projected_storage_units", 0) <= case["storage_capacity"],
-            }
-            constraints_ok = all(
-                facts[name] if decision["decision"] == "supplemental_purchase"
-                else name in decision["constraints"]
-                for name in golden["must_respect"]
+    goldens = [g for g in dataset["cases"] if not case_ids or g["id"] in case_ids]
+    if not goldens:
+        raise ValueError("No evaluation cases matched")
+    test_cases = []
+    for golden in goldens:
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store(Path(temp) / "eval.sqlite3")
+            case = get_cases()[golden["case_id"]]
+            merge_patch(case, golden.get("patch", {}))
+            if golden.get("injection"):
+                case["title"] += " " + golden["injection"]
+            case = store.update_case(case)
+            output = PurchasingAgent(store, provider=provider).investigate(case["id"])
+            action = None
+            if golden.get("outcome") and output["draft"]:
+                action = store.approve(output["draft"]["id"], approved=True, outcome=golden["outcome"])
+            expected_tools = [
+                "get_purchasing_situation",
+                "get_inventory_and_open_orders",
+                "get_demand_evidence",
+                "get_supplier_terms",
+                "evaluate_purchase_policy",
+            ]
+            if golden["expected_decision"] in ACTIONABLE:
+                expected_tools.append("prepare_purchase_draft")
+            test_cases.append(
+                LLMTestCase(
+                    name=golden["id"],
+                    input=f"Investigate {case['feature']}: {case['title']}",
+                    actual_output=output["message"],
+                    expected_output=f"Decision {golden['expected_decision']}; authorized quantity {golden['expected_quantity']}. Explain evidence and constraints. Any prepared order remains a draft awaiting buyer approval; no execution has occurred.",
+                    context=[
+                        json.dumps(
+                            {
+                                "operational_evidence": case,
+                                "policy_decision": output["decision"],
+                                "actual_draft": output["draft"],
+                            }
+                        )
+                    ],
+                    tools_called=[
+                        ToolCall(name=t["tool"], input_parameters=t["input"])
+                        for t in output["model_tool_calls"]
+                    ],
+                    expected_tools=[ToolCall(name=name) for name in expected_tools],
+                    metadata={"output": output, "golden": golden, "action": action},
+                )
             )
-            checks = {
-                "decision_correct": decision["decision"] == golden["expected_decision"],
-                "required_tools_used": all(name in tool_names for name in golden["expected_tools"]),
-                "no_unexpected_action": not (decision["decision"] != "supplemental_purchase" and output["draft"]),
-                "approval_required_for_order": decision.get("requires_human_approval", False) == golden["requires_approval"],
-                "constraints_respected": constraints_ok,
-            }
-            results.append({"id": golden["id"], "checks": checks, "passed": all(checks.values()),
-                            "decision": decision["decision"], "tools": tool_names})
-
-        # Exercise the tool side effects and feedback loop, including a failed supplier response.
-        success_agent = PurchasingAgent(get_cases(), Store(Path(temp_dir) / "success.sqlite3"))
-        success = success_agent.investigate_shortfall("supplier-shortfall")
-        approved = success_agent.store.execute_draft(success["draft"]["id"])
-        validated = success_agent.store.validate_draft(success["draft"]["id"])
-        success_check = {"approval_creates_confirmed_order": approved["ok"] and approved["status"] == "supplier_confirmed",
-                         "confirmation_validated": validated["valid"]}
-
-        failure_agent = PurchasingAgent(get_cases(), Store(Path(temp_dir) / "failure.sqlite3"))
-        failed = failure_agent.investigate_shortfall("supplier-shortfall")
-        rejected = failure_agent.store.execute_draft(failed["draft"]["id"], simulate_failure=True)
-        follow_up = failure_agent.store.validate_draft(failed["draft"]["id"])
-        failure_check = {"supplier_rejection_recorded": rejected["ok"] and rejected["status"] == "supplier_rejected",
-                         "failed_action_not_reported_as_success": not follow_up["valid"],
-                         "follow_up_guidance_present": "reassess" in follow_up["message"].lower()}
-
-    feedback = [
-        {"id": "supplier-confirmation-feedback", "checks": success_check, "passed": all(success_check.values()),
-         "decision": "confirmed and validated", "tools": ["execute_order", "validate_order"]},
-        {"id": "supplier-rejection-feedback", "checks": failure_check, "passed": all(failure_check.values()),
-         "decision": "rejected and escalated", "tools": ["execute_order", "validate_order"]},
+    metrics = [
+        PurchasingContractMetric(kind)
+        for kind in ("Decision correctness", "Evidence gate", "Policy and approval safety", "Action feedback")
     ]
-    all_results = results + feedback
-    return {"dataset_version": dataset["version"], "passed": all(r["passed"] for r in all_results), "results": all_results}
+    metrics.append(
+        ToolCorrectnessMetric(
+            threshold=1, should_exact_match=False, include_reason=False, async_mode=False, model=OllamaJudge()
+        )
+    )
+    if judge:
+        metrics.append(
+            GEval(
+                name="Buyer explanation quality",
+                model=OllamaJudge(),
+                threshold=0.8,
+                evaluation_params=[
+                    SingleTurnParams.INPUT,
+                    SingleTurnParams.ACTUAL_OUTPUT,
+                    SingleTurnParams.EXPECTED_OUTPUT,
+                    SingleTurnParams.CONTEXT,
+                ],
+                criteria="The buyer explanation must agree with the expected decision and quantity, cite key evidence in CONTEXT, and distinguish a draft awaiting approval from an executed order. CONTEXT includes the real draft ID and authorized supplier, cost and evidence. Those details are supported, not invented. Accept equivalent wording for awaiting approval. Do not reward invented actions or require exact status strings.",
+                async_mode=False,
+            )
+        )
+    measured = evaluate(
+        test_cases=test_cases,
+        metrics=metrics,
+        async_config=AsyncConfig(run_async=False),
+        cache_config=CacheConfig(use_cache=False, write_cache=False),
+        display_config=DisplayConfig(show_indicator=False, print_results=False, inspect_after_run=False),
+        identifier=f"purchasing-{dataset['version']}-{provider}",
+        hyperparameters={
+            "provider": provider,
+            "policy_version": POLICY_VERSION,
+            "dataset_version": dataset["version"],
+            "prompt_hash": test_cases[0].metadata["output"]["metadata"]["prompt_hash"],
+        },
+    )
+    results = []
+    for t, evaluated in zip(test_cases, measured.test_results, strict=True):
+        checks = {m.name: bool(m.success) for m in evaluated.metrics_data}
+        scores = [
+            {
+                "metric": m.name,
+                "score": m.score,
+                "threshold": m.threshold,
+                "passed": m.success,
+                "reason": m.reason,
+                "error": m.error,
+            }
+            for m in evaluated.metrics_data
+        ]
+        results.append(
+            {
+                "id": t.name,
+                "decision": t.metadata["output"]["decision"]["decision"],
+                "checks": checks,
+                "passed": all(checks.values()),
+                "metrics": scores,
+                "trace": t.metadata["output"]["trace"],
+                "model_tool_calls": t.metadata["output"]["model_tool_calls"],
+                "action_result": t.metadata["action"],
+                "expected_decision": t.metadata["golden"]["expected_decision"],
+                "expected_quantity": t.metadata["golden"]["expected_quantity"],
+                "actual_quantity": t.metadata["output"]["decision"]["quantity"],
+                "model_explanation": t.actual_output,
+                "run_metadata": t.metadata["output"]["metadata"],
+            }
+        )
+    report = {
+        "framework": "deepeval",
+        "dataset_version": dataset["version"],
+        "policy_version": POLICY_VERSION,
+        "provider": provider,
+        "judge_enabled": judge,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "passed": all(r["passed"] for r in results),
+        "results": results,
+    }
+    if output_path:
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report, indent=2))
+    return report
 
 
 if __name__ == "__main__":
-    result = run()
-    print(json.dumps(result, indent=2))
-    raise SystemExit(0 if result["passed"] else 1)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--provider", choices=["scripted", "ollama"], default="scripted")
+    parser.add_argument("--judge", action="store_true")
+    parser.add_argument("--cases", nargs="+")
+    parser.add_argument("--output", default=".data/evaluation-report.json")
+    args = parser.parse_args()
+    report = run(args.provider, args.judge, args.cases, args.output)
+    print(
+        json.dumps(
+            {
+                "passed": report["passed"],
+                "cases": len(report["results"]),
+                "provider": args.provider,
+                "report": args.output,
+            },
+            indent=2,
+        )
+    )
+    raise SystemExit(0 if report["passed"] else 1)
