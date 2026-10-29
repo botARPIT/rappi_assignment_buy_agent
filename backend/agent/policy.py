@@ -163,6 +163,8 @@ def assess_purchase(raw_case):
         {
             "proposed_units": quantity,
             "estimated_cost": cost / 100,
+            "budget_before_order": case["budget_cents"] / 100,
+            "projected_budget_after_full_confirmation": (case["budget_cents"] - cost) / 100,
             "minimum_order_units": supplier["minimum_order"],
             "pack_multiple_units": supplier["pack_multiple"],
             "projected_storage_units": storage,
