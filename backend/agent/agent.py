@@ -1,39 +1,115 @@
-"""Shortfall workflow orchestration; policy owns decisions, tools own side effects."""
+"""LangChain create_agent runtime. The model selects tools; policy controls authorization."""
 
-from .policy import assess_shortfall
+import hashlib
+import os
+import time
+from uuid import uuid4
+
+from langchain.agents import create_agent
+from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware, wrap_model_call
+from langchain_core.messages import AIMessage, SystemMessage
+
+from .llm import build_model
+from .policy import ACTIONABLE, POLICY_VERSION, REQUIRED_READS
+from .prompts import SYSTEM_PROMPT
 from .tools import PurchasingTools
 
 
 class PurchasingAgent:
-    def __init__(self, cases, store):
-        self.cases = cases
+    def __init__(self, store, provider=None, model=None):
         self.store = store
+        self.provider = provider or os.getenv("AGENT_PROVIDER", "ollama")
+        self.model = model
 
-    def investigate_shortfall(self, case_id):
-        tools = PurchasingTools(self.cases, self.store)
-        case = tools.get_situation(case_id)
-        if not case:
-            raise KeyError(case_id)
-        po = tools.inspect_open_purchase_order(case)
-        inventory = tools.get_inventory_and_demand(case)
-        alternate = tools.find_alternate_supplier(case)
-        constraints = tools.check_constraints(case)
-        decision = assess_shortfall(case, po, inventory, alternate, constraints)
-        draft = None
-        if decision["decision"] == "supplemental_purchase":
-            draft = tools.create_draft_order(case_id, decision)
-        return {
+    def investigate(self, case_id, callbacks=None):
+        case = self.store.get_case(case_id)
+        tools = PurchasingTools(case, self.store)
+        model = self.model or build_model(self.provider)
+
+        @wrap_model_call
+        def gated_tool_visibility(request, handler):
+            # Gate capabilities before the model sees them; tool implementations also enforce authorization.
+            if tools.draft or (tools.decision and tools.decision["decision"] not in ACTIONABLE):
+                allowed = set()
+                stage = "CURRENT STAGE: FINAL EXPLANATION. No tools are offered. Explain the policy result and whether buyer approval is needed. Stop."
+            elif tools.decision:
+                allowed = {"prepare_purchase_draft"}
+                stage = f"CURRENT STAGE: PREPARE A DRAFT. Call the offered draft tool using decision_id {tools.decision_id}."
+            elif REQUIRED_READS - tools.reads:
+                allowed = REQUIRED_READS - tools.reads
+                stage = "CURRENT STAGE: EVIDENCE COLLECTION. Read all currently offered evidence tools. Policy and action tools are not offered yet. Do not call them."
+            else:
+                allowed = {"evaluate_purchase_policy"}
+                stage = "CURRENT STAGE: POLICY EVALUATION. All evidence has been read. Call the offered policy tool now."
+            return handler(
+                request.override(
+                    tools=[t for t in request.tools if t.name in allowed],
+                    system_message=SystemMessage(content=SYSTEM_PROMPT + "\n" + stage),
+                )
+            )
+
+        runtime = create_agent(
+            model=model,
+            tools=tools.build(),
+            system_prompt=SYSTEM_PROMPT,
+            middleware=[
+                gated_tool_visibility,
+                ModelCallLimitMiddleware(run_limit=10, exit_behavior="end"),
+                ToolCallLimitMiddleware(run_limit=16, exit_behavior="end"),
+            ],
+        )
+        started = time.monotonic()
+        error = None
+        narrative = ""
+        response = None
+        try:
+            response = runtime.invoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": f"Investigate purchasing situation {case_id}. Use tools to decide what should happen next.",
+                        }
+                    ]
+                },
+                config={"recursion_limit": 80, "callbacks": callbacks or []},
+            )
+            last = next(
+                (m for m in reversed(response["messages"]) if isinstance(m, AIMessage) and m.content), None
+            )
+            if last:
+                narrative = last.text
+        except Exception as exc:
+            # An incomplete model invocation never becomes authorization by itself.
+            error = f"{type(exc).__name__}: Agent run could not finish. Check model availability and retry."
+        decision = tools.canonical_decision()
+        if tools.decision is None or error:
+            narrative = decision["reason"]
+        output = {
+            "run_id": uuid4().hex,
             "case": case,
             "decision": decision,
-            "draft": draft,
+            "draft": tools.draft,
             "trace": tools.trace,
-            "message": self._message(decision),
+            "model_tool_calls": [
+                {"tool": call["name"], "input": call["args"]}
+                for message in (response or {}).get("messages", [])
+                if isinstance(message, AIMessage)
+                for call in message.tool_calls
+            ],
+            "message": narrative or decision["reason"],
+            "error": error,
+            "metadata": {
+                "framework": "langchain.create_agent",
+                "provider": self.provider,
+                "model": os.getenv("AGENT_MODEL", "gpt-oss:20b-cloud")
+                if self.provider == "ollama"
+                else "scripted-test-model",
+                "policy_version": POLICY_VERSION,
+                "prompt_hash": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "execution_mode": "live_model" if self.provider == "ollama" else "scripted",
+            },
         }
-
-    @staticmethod
-    def _message(decision):
-        return {
-            "supplemental_purchase": "A supplemental order is ready for buyer approval.",
-            "no_action": "No additional purchase is needed based on the available evidence.",
-            "escalate": "The situation needs buyer review. The agent did not place an order.",
-        }[decision["decision"]]
+        self.store.record_run(output)
+        return output

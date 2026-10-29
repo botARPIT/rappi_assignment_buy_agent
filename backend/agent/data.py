@@ -1,131 +1,70 @@
-"""Small, explicit mock purchasing dataset used by the runnable demo."""
+"""Versioned purchasing fixtures. Each case has its own product, node and budget."""
 
 from copy import deepcopy
 
+DATASET_VERSION = "2.0.0"
 
-CASES = {
-    "supplier-shortfall": {
-        "id": "supplier-shortfall",
-        "title": "Supplier confirms only half the order",
-        "scenario": "Supplier shortfall",
+
+def base_case(case_id, feature, title):
+    return {
+        "id": case_id,
+        "feature": feature,
+        "title": title,
         "product": "Arabica coffee beans · 1 kg",
-        "sku": "COF-AR-1KG",
+        "sku": case_id.upper(),
         "node": "Bogotá North",
+        "revision": 1,
+        "inventory": {"on_hand": 120},
+        "demand": {"forecast_daily": 30, "recent_daily": 30, "observed_days": 7, "age_hours": 2},
+        "horizon_days": 14,
+        "safety_days": 2,
         "purchase_order": {
-            "id": "PO-1042",
+            "id": "PO-" + case_id,
             "ordered_quantity": 500,
             "confirmed_quantity": 250,
-            "unit_cost": 12,
+            "eta_days": 5,
             "supplier": "Andes Foods",
-            "status": "partial confirmation",
         },
-        "inventory": {"on_hand": 40, "daily_demand": 30, "safety_days": 2},
-        "supplier_lead_days": 12,
-        "budget_remaining": 2200,
-        "storage_capacity": 450,
-        "alternate_supplier": {
-            "name": "Café Central",
-            "unit_cost": 12,
-            "lead_days": 3,
-            "minimum_order": 100,
-            "pack_multiple": 50,
-            "max_quantity": 300,
-            "available": True,
-        },
-        "expected": "supplemental_purchase",
-    },
-    "inventory-covers-demand": {
-        "id": "inventory-covers-demand",
-        "title": "Existing inventory covers the shortfall",
-        "scenario": "Supplier shortfall",
-        "product": "Oat milk · 1 L",
-        "sku": "OAT-1L",
-        "node": "Bogotá North",
-        "purchase_order": {
-            "id": "PO-1043",
-            "ordered_quantity": 500,
-            "confirmed_quantity": 250,
-            "unit_cost": 4,
-            "supplier": "Valle Verde",
-            "status": "partial confirmation",
-        },
-        "inventory": {"on_hand": 200, "daily_demand": 10, "safety_days": 2},
-        "supplier_lead_days": 10,
-        "budget_remaining": 1000,
-        "storage_capacity": 600,
-        "alternate_supplier": {
-            "name": "Lácteos del Sur",
-            "unit_cost": 5,
-            "lead_days": 3,
-            "minimum_order": 50,
-            "pack_multiple": 10,
-            "max_quantity": 500,
-            "available": True,
-        },
-        "expected": "no_action",
-    },
-    "budget-constrained": {
-        "id": "budget-constrained",
-        "title": "Alternate supply exceeds available budget",
-        "scenario": "Purchasing constraint",
-        "product": "Cooking oil · 5 L",
-        "sku": "OIL-5L",
-        "node": "Bogotá North",
-        "purchase_order": {
-            "id": "PO-1044",
-            "ordered_quantity": 500,
-            "confirmed_quantity": 250,
-            "unit_cost": 12,
-            "supplier": "Andes Foods",
-            "status": "partial confirmation",
-        },
-        "inventory": {"on_hand": 40, "daily_demand": 30, "safety_days": 2},
-        "supplier_lead_days": 12,
-        "budget_remaining": 1600,
-        "storage_capacity": 450,
-        "alternate_supplier": {
-            "name": "Central Wholesale",
-            "unit_cost": 12,
-            "lead_days": 3,
-            "minimum_order": 100,
-            "pack_multiple": 50,
-            "max_quantity": 300,
-            "available": True,
-        },
-        "expected": "escalate",
-    },
-    "storage-constrained": {
-        "id": "storage-constrained",
-        "title": "There is not enough storage for a top-up",
-        "scenario": "Purchasing constraint",
-        "product": "Rice · 5 kg",
-        "sku": "RICE-5KG",
-        "node": "Bogotá North",
-        "purchase_order": {
-            "id": "PO-1045",
-            "ordered_quantity": 500,
-            "confirmed_quantity": 250,
-            "unit_cost": 8,
-            "supplier": "Andes Foods",
-            "status": "partial confirmation",
-        },
-        "inventory": {"on_hand": 40, "daily_demand": 30, "safety_days": 2},
-        "supplier_lead_days": 12,
-        "budget_remaining": 5000,
-        "storage_capacity": 350,
-        "alternate_supplier": {
-            "name": "Central Wholesale",
-            "unit_cost": 8,
-            "lead_days": 3,
-            "minimum_order": 100,
-            "pack_multiple": 50,
-            "max_quantity": 300,
-            "available": True,
-        },
-        "expected": "escalate",
-    },
-}
+        "additional_incoming": [],
+        "budget_cents": 300000,
+        "storage_capacity": 700,
+        "suppliers": [
+            {
+                "id": "central",
+                "name": "Café Central",
+                "unit_cost_cents": 1200,
+                "lead_days": 3,
+                "minimum_order": 100,
+                "pack_multiple": 50,
+                "max_quantity": 1000,
+                "available": True,
+            }
+        ],
+        "recommended_quantity": None,
+    }
 
 
 def get_cases():
-    return deepcopy(CASES)
+    shortfall = base_case(
+        "supplier-shortfall", "supplier_shortfall", "Supplier can fulfil only 250 of 500 units"
+    )
+    review = base_case(
+        "recommendation-review", "recommendation_review", "Review a recommendation to buy 800 units"
+    )
+    review.update(product="Oat milk · 1 L", recommended_quantity=800)
+    review["inventory"]["on_hand"] = 100
+    review["purchase_order"].update(ordered_quantity=100, confirmed_quantity=100, eta_days=4)
+    review["demand"].update(forecast_daily=20, recent_daily=20)
+    review["suppliers"][0].update(lead_days=2, unit_cost_cents=1000)
+    demand = base_case("demand-spike", "demand_change", "Sales have tripled while an order is already open")
+    demand["product"] = "Sparkling water · 6 pack"
+    demand["demand"].update(forecast_daily=10, recent_daily=30)
+    covered = deepcopy(shortfall)
+    covered.update(id="inventory-covers-demand", title="Existing supply already covers demand", sku="OAT-1L")
+    covered["inventory"]["on_hand"] = 500
+    covered["storage_capacity"] = 1000
+    budget = deepcopy(shortfall)
+    budget.update(id="budget-constrained", title="A top-up would exceed the budget", budget_cents=100000)
+    storage = deepcopy(shortfall)
+    storage.update(id="storage-constrained", title="A top-up would exceed storage", storage_capacity=450)
+    return {c["id"]: c for c in (review, shortfall, demand, covered, budget, storage)}

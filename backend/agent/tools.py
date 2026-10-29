@@ -1,52 +1,120 @@
-"""Read and write tools. The agent calls these rather than touching storage directly."""
+"""Bound LangChain tools: the LLM can gather evidence and request a policy-authorized draft."""
 
 from copy import deepcopy
+from uuid import uuid4
+
+from langchain.tools import tool
+
+from .policy import ACTIONABLE, REQUIRED_READS, assess_purchase, result
 
 
 class PurchasingTools:
-    def __init__(self, cases, store):
-        self.cases = cases
+    def __init__(self, case, store):
+        self.case = deepcopy(case)
         self.store = store
         self.trace = []
+        self.decision = None
+        self.decision_id = None
+        self.draft = None
+        self.reads = set()
 
-    def _record(self, name, args, result):
-        self.trace.append({"tool": name, "input": args, "result": result})
-        return result
+    def record(self, name, args, output):
+        self.trace.append({"tool": name, "input": args, "result": deepcopy(output)})
+        return output
 
-    def get_situation(self, case_id):
-        case = self.cases.get(case_id)
-        result = deepcopy(case) if case else None
-        return self._record("get_situation", {"case_id": case_id}, result)
+    def build(self):
+        @tool
+        def get_purchasing_situation() -> dict:
+            """Read the selected product, node, situation type and initial recommendation. No arguments."""
+            self.reads.add("get_purchasing_situation")
+            return self.record(
+                "get_purchasing_situation",
+                {},
+                {
+                    k: self.case[k]
+                    for k in ("id", "feature", "title", "product", "node", "recommended_quantity")
+                },
+            )
 
-    def inspect_open_purchase_order(self, case):
-        po = deepcopy(case["purchase_order"])
-        po["shortfall"] = po["ordered_quantity"] - po["confirmed_quantity"]
-        return self._record("inspect_open_purchase_order", {"po_id": po["id"]}, po)
+        @tool
+        def get_inventory_and_open_orders() -> dict:
+            """Read authoritative on-hand stock and all confirmed incoming purchase orders with arrival days."""
+            self.reads.add("get_inventory_and_open_orders")
+            return self.record(
+                "get_inventory_and_open_orders",
+                {},
+                {
+                    k: self.case[k]
+                    for k in (
+                        "inventory",
+                        "purchase_order",
+                        "additional_incoming",
+                        "storage_capacity",
+                        "horizon_days",
+                        "safety_days",
+                    )
+                },
+            )
 
-    def get_inventory_and_demand(self, case):
-        result = {
-            **deepcopy(case["inventory"]),
-            "supplier_lead_days": case["supplier_lead_days"],
-            "storage_capacity": case["storage_capacity"],
-        }
-        return self._record("get_inventory_and_demand", {"sku": case["sku"], "node": case["node"]}, result)
+        @tool
+        def get_demand_evidence() -> dict:
+            """Read forecast, actual sales, observation window and freshness before deciding demand."""
+            self.reads.add("get_demand_evidence")
+            return self.record("get_demand_evidence", {}, self.case["demand"])
 
-    def find_alternate_supplier(self, case):
-        result = deepcopy(case["alternate_supplier"])
-        return self._record("find_alternate_supplier", {"sku": case["sku"], "node": case["node"]}, result)
+        @tool
+        def get_supplier_terms() -> dict:
+            """Read available suppliers, unit prices, lead times, minimums, pack sizes, capacity and budget."""
+            self.reads.add("get_supplier_terms")
+            return self.record(
+                "get_supplier_terms",
+                {},
+                {"suppliers": self.case["suppliers"], "budget_cents": self.case["budget_cents"]},
+            )
 
-    def check_constraints(self, case):
-        result = {"budget_remaining": case["budget_remaining"], "storage_capacity": case["storage_capacity"]}
-        return self._record("check_constraints", {"sku": case["sku"], "node": case["node"]}, result)
+        @tool
+        def evaluate_purchase_policy() -> dict:
+            """Evaluate deterministic purchasing rules after all four evidence tools. Returns a decision_id; never accepts model quantities."""
+            missing = sorted(REQUIRED_READS - self.reads)
+            if missing:
+                return self.record(
+                    "evaluate_purchase_policy", {}, {"error": "evidence_gate", "missing_tools": missing}
+                )
+            self.decision = assess_purchase(self.case)
+            self.decision_id = uuid4().hex
+            return self.record(
+                "evaluate_purchase_policy", {}, {**self.decision, "decision_id": self.decision_id}
+            )
 
-    def create_draft_order(self, case_id, decision):
-        draft = self.store.create_draft(case_id, decision)
-        return self._record("create_draft_order", {"case_id": case_id, "quantity": decision["quantity"]}, draft)
+        @tool
+        def prepare_purchase_draft(decision_id: str) -> dict:
+            """Prepare a draft using exactly the policy decision_id. It does not execute an order or grant buyer approval."""
+            if (
+                not self.decision
+                or decision_id != self.decision_id
+                or self.decision["decision"] not in ACTIONABLE
+            ):
+                return self.record(
+                    "prepare_purchase_draft",
+                    {"decision_id": decision_id},
+                    {"error": "authorization_gate", "message": "An actionable policy decision is required."},
+                )
+            self.draft = self.store.create_draft(self.case["id"], self.decision)
+            return self.record("prepare_purchase_draft", {"decision_id": decision_id}, self.draft)
 
-    def execute_order(self, draft_id, simulate_failure=False):
-        result = self.store.execute_draft(draft_id, simulate_failure)
-        return self._record("execute_order", {"draft_id": draft_id, "simulate_failure": simulate_failure}, result)
+        return [
+            get_purchasing_situation,
+            get_inventory_and_open_orders,
+            get_demand_evidence,
+            get_supplier_terms,
+            evaluate_purchase_policy,
+            prepare_purchase_draft,
+        ]
 
-    def validate_order(self, draft_id):
-        result = self.store.validate_draft(draft_id)
-        return self._record("validate_order", {"draft_id": draft_id}, result)
+    def canonical_decision(self):
+        return self.decision or result(
+            self.case,
+            "investigate",
+            "The agent did not complete the required evidence and policy checks. No order is authorized.",
+            constraints=["incomplete_agent_run"],
+        )

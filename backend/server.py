@@ -1,133 +1,105 @@
-"""Zero-extra-dependency HTTP API and static frontend server."""
+"""FastAPI boundary for the buyer UI, agent, approval gate and evaluation report."""
 
-import json
-import re
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
 from pathlib import Path
-from urllib.parse import urlparse
+from typing import Literal
+
+import uvicorn
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from backend.agent.agent import PurchasingAgent
 from backend.agent.data import get_cases
-from backend.agent.policy import assess_shortfall
-from backend.agent.tools import PurchasingTools
-from backend.store import Store
-
+from backend.store import ConflictError, Store
 
 ROOT = Path(__file__).resolve().parents[1]
-WEB = ROOT / "frontend"
-DATA_DIR = ROOT / ".data"
-CASES = get_cases()
-STORE = Store(DATA_DIR / "purchasing.sqlite3")
-AGENT = PurchasingAgent(CASES, STORE)
+load_dotenv(ROOT / ".env")
 
 
-class Handler(BaseHTTPRequestHandler):
-    server_version = "BuyerAgent/1.0"
+class RunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case_id: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
 
-    def log_message(self, fmt, *args):
-        print("%s - %s" % (self.address_string(), fmt % args))
 
-    def send_json(self, data, status=200):
-        body = json.dumps(data).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+class ApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approved: StrictBool
+    outcome: Literal["confirmed", "rejected", "partial"] = "confirmed"
+    actor: str = Field(default="demo-buyer", min_length=1, max_length=80)
 
-    def read_json(self):
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            return json.loads(self.rfile.read(length) or b"{}")
-        except (ValueError, json.JSONDecodeError):
-            return {}
+    @field_validator("approved")
+    @classmethod
+    def explicit_approval(cls, value):
+        if value is not True:
+            raise ValueError("Explicit buyer approval is required")
+        return value
 
-    def do_GET(self):
-        path = urlparse(self.path).path
-        if path == "/api/cases":
-            self.send_json([{
-                "id": c["id"], "title": c["title"], "scenario": c["scenario"],
-                "product": c["product"], "sku": c["sku"], "node": c["node"],
-                "purchase_order": c["purchase_order"], "inventory": c["inventory"],
-                "supplier_lead_days": c["supplier_lead_days"],
-                "budget_remaining": c["budget_remaining"],
-                "storage_capacity": c["storage_capacity"],
-            } for c in CASES.values()])
-            return
-        if path == "/api/events":
-            case_id = urlparse(self.path).query.split("case_id=", 1)[1].split("&", 1)[0] if "case_id=" in self.path else None
-            self.send_json(STORE.events(case_id))
-            return
-        if path == "/api/evals":
-            from evaluations.run_eval import run
-            self.send_json(run())
-            return
-        if path == "/" or path == "/index.html":
-            self.serve_file(WEB / "index.html")
-            return
-        if path.startswith("/static/"):
-            candidate = (WEB / path.removeprefix("/static/")).resolve()
-            if candidate.parent != WEB.resolve() or not candidate.is_file():
-                self.send_error(404)
-                return
-            self.serve_file(candidate)
-            return
-        self.send_error(404)
 
-    def do_POST(self):
-        path = urlparse(self.path).path
-        body = self.read_json()
-        if path == "/api/agent/run":
-            case_id = body.get("case_id")
-            try:
-                result = AGENT.investigate_shortfall(case_id)
-            except KeyError:
-                self.send_json({"error": "unknown_case"}, 404)
-                return
-            self.send_json(result)
-            return
+def create_app(db_path=None, provider=None):
+    app = FastAPI(title="Rappi Purchasing Agent", version="0.2.0")
+    store = Store(db_path or ROOT / ".data" / "purchasing-v2.sqlite3")
+    agent = PurchasingAgent(store, provider=provider)
+    app.state.store = store
+    app.state.agent = agent
 
-        match = re.fullmatch(r"/api/drafts/([^/]+)/approve", path)
-        if match:
-            draft_id = match.group(1)
-            draft = STORE.get_draft(draft_id)
-            if not draft:
-                self.send_json({"error": "draft_not_found"}, 404)
-                return
-            case = CASES.get(draft["case_id"])
-            if not case:
-                self.send_json({"error": "case_not_found"}, 404)
-                return
-            tools = PurchasingTools(CASES, STORE)
-            po = tools.inspect_open_purchase_order(case)
-            inventory = tools.get_inventory_and_demand(case)
-            alternate = tools.find_alternate_supplier(case)
-            constraints = tools.check_constraints(case)
-            current_decision = assess_shortfall(case, po, inventory, alternate, constraints)
-            if current_decision["decision"] != "supplemental_purchase" or current_decision["quantity"] != draft["quantity"] or current_decision["supplier"] != draft["supplier"]:
-                self.send_json({"error": "decision_changed_reanalyze", "decision": current_decision}, 409)
-                return
-            action = tools.execute_order(draft_id, bool(body.get("simulate_failure")))
-            validation = tools.validate_order(draft_id) if action.get("ok") else None
-            self.send_json({"action": action, "validation": validation, "trace": tools.trace})
-            return
-        self.send_error(404)
+    @app.exception_handler(KeyError)
+    async def missing_handler(request: Request, exc: KeyError):
+        return JSONResponse({"error": "not_found"}, status_code=404)
 
-    def serve_file(self, path):
-        content = path.read_bytes()
-        content_type = "text/html; charset=utf-8" if path.suffix == ".html" else "text/css; charset=utf-8" if path.suffix == ".css" else "text/javascript; charset=utf-8"
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(content)))
-        self.end_headers()
-        self.wfile.write(content)
+    @app.exception_handler(ConflictError)
+    async def conflict_handler(request: Request, exc: ConflictError):
+        return JSONResponse({"error": str(exc)}, status_code=409)
+
+    @app.get("/health")
+    def health():
+        return {"status": "ok", "agent_provider": agent.provider, "framework": "langchain"}
+
+    @app.get("/api/cases")
+    def cases():
+        return store.cases()
+
+    @app.post("/api/agent/run")
+    def run_agent(body: RunRequest):
+        return agent.investigate(body.case_id)
+
+    @app.post("/api/drafts/{draft_id}/approve")
+    def approve(draft_id: str, body: ApprovalRequest):
+        return store.approve(draft_id, approved=body.approved, outcome=body.outcome, actor=body.actor)
+
+    @app.post("/api/drafts/{draft_id}/reject")
+    def reject(draft_id: str):
+        return store.reject(draft_id)
+
+    @app.post("/api/cases/{case_id}/reset")
+    def reset(case_id: str):
+        fixtures = get_cases()
+        if case_id not in fixtures:
+            raise KeyError(case_id)
+        return store.update_case(fixtures[case_id])
+
+    @app.get("/api/events")
+    def events(case_id: str | None = None):
+        return store.events(case_id)
+
+    @app.get("/api/evals")
+    def evaluations():
+        from evaluations.run_eval import run
+
+        return run(provider="scripted")
+
+    @app.get("/")
+    def home():
+        return FileResponse(ROOT / "frontend" / "index.html")
+
+    app.mount("/static", StaticFiles(directory=ROOT / "frontend"), name="static")
+    return app
 
 
 def main():
-    port = 8000
-    print(f"Buyer Agent running at http://127.0.0.1:{port}")
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    uvicorn.run(create_app(), host="127.0.0.1", port=int(os.getenv("PORT", "8000")))
 
 
 if __name__ == "__main__":
