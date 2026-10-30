@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from backend.action_feedback import build_action_feedback
 from backend.agent.data import get_cases
 from backend.agent.policy import ACTIONABLE, assess_purchase, matches_authorization
 from backend.supplier import submit_order, validate_response
@@ -143,6 +144,8 @@ class Store:
                 )
             order = submit_order(authorization, draft_id, outcome)
             validation = validate_response(authorization, order)
+            supplier = next(s for s in case["suppliers"] if s["id"] == authorization["supplier_id"])
+            feedback = build_action_feedback(authorization, order, validation, supplier)
             if validation["commit_allowed"] and order["confirmed_quantity"]:
                 case["budget_cents"] -= order["total_cost_cents"]
                 case["additional_incoming"].append(
@@ -152,6 +155,7 @@ class Store:
                         "eta_days": order["eta_days"],
                     }
                 )
+            case.setdefault("action_feedback", []).append(feedback)
             case["revision"] += 1
             follow_up = None
             if not validation["valid"]:
@@ -160,12 +164,13 @@ class Store:
                     "status": "needs_buyer_review",
                     "decision": reassessed["decision"],
                     "remaining_gap": reassessed["evidence"].get("uncovered_units"),
-                    "message": "Supplier outcome differed from the approved order. Reassess the remaining coverage gap before approving another action.",
+                    "message": "Supplier outcome differed from the approved order. Refresh the failed supplier's terms or consider an alternative. Any new order requires buyer approval.",
                 }
             result = {
                 "action": order,
                 "validation": validation,
                 "follow_up": follow_up,
+                "feedback": feedback,
                 "idempotent_replay": False,
                 "approved_by": actor,
             }

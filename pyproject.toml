@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
   "langchain>=1.4.6,<2",
   "langchain-ollama>=1.1.0,<2",
+  "langgraph>=1.2.18,<2",
   "deepeval>=4.3.1,<5",
   "fastapi>=0.115,<1",
   "uvicorn>=0.34,<1",

@@ -1962,6 +1962,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "langchain" },
     { name = "langchain-ollama" },
+    { name = "langgraph" },
     { name = "python-dotenv" },
     { name = "uvicorn" },
 ]
@@ -1980,6 +1981,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "langchain", specifier = ">=1.4.6,<2" },
     { name = "langchain-ollama", specifier = ">=1.1.0,<2" },
+    { name = "langgraph", specifier = ">=1.2.18,<2" },
     { name = "python-dotenv", specifier = ">=1,<2" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
 ]

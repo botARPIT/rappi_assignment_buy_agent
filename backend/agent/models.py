@@ -1,7 +1,5 @@
 """Validated operational inputs; quantities and money cannot be model-authored strings."""
 
-from typing import Literal
-
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -43,11 +41,31 @@ class Supplier(StrictModel):
     pack_multiple: int = Field(ge=1)
     max_quantity: int = Field(ge=0)
     available: bool
+    terms_version: int = Field(default=1, ge=1)
+
+
+class ActionFeedback(StrictModel):
+    """Observed supplier outcome, distinct from the original purchasing plan."""
+
+    order_id: str
+    draft_id: str
+    supplier_id: str
+    supplier_terms_version: int = Field(ge=1)
+    outcome: str
+    requested_quantity: int = Field(ge=0)
+    confirmed_quantity: int | None = Field(default=None, ge=0)
+    committed_quantity: int = Field(ge=0)
+    expected_unit_cost_cents: int = Field(gt=0)
+    reported_unit_cost_cents: int | None = Field(default=None, ge=0)
+    expected_eta_days: int = Field(ge=0)
+    reported_eta_days: int | None = Field(default=None, ge=0)
+    validation_passed: bool
+    failed_checks: list[str]
 
 
 class Situation(StrictModel):
     id: str
-    feature: Literal["recommendation_review", "supplier_shortfall", "demand_change"]
+    feature: str = Field(min_length=1)
     title: str
     product: str
     sku: str
@@ -63,3 +81,4 @@ class Situation(StrictModel):
     storage_capacity: int = Field(ge=0)
     suppliers: list[Supplier]
     recommended_quantity: int | None = Field(default=None, ge=0)
+    action_feedback: list[ActionFeedback] = Field(default_factory=list)
