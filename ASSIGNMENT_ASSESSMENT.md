@@ -6,7 +6,7 @@ Reviewed on 2026-10-30 against the six-page **AI Purchasing Agent — Assignment
 
 **The core functional assignment is implemented.** The application investigates evidence, presents a purchasing decision and explanation, prepares an authorized draft, executes a buyer-approved mock purchase, validates the supplier response, and feeds failures into subsequent investigations. Three scenario families are implemented; shared budget, storage and delivery rules cover the fourth scenario's purchasing constraints.
 
-This verdict concerns implemented behavior and the local checks below. It is not a claim that the live model is reliable across arbitrary purchasing situations. A current live sweep was completed, but only 4/10 answers passed every metric. Independent model advice and judge quality have demonstrated weaknesses, detailed below. Public repository visibility, submission URL and deadline compliance were not checked.
+This verdict concerns implemented behavior and the local checks below. It is not a claim that the live model is reliable across arbitrary purchasing situations. A current live sweep was completed, but only 4/10 answers passed every metric. Independent model advice and judge quality have demonstrated weaknesses, detailed below. The configured GitHub repository is public, but it has no published branches yet. Submission and deadline compliance remain unverified.
 
 ## Requirement mapping
 
@@ -24,7 +24,7 @@ This verdict concerns implemented behavior and the local checks below. It is not
 | Small scenario set evaluating appropriateness (p. 4) | Eight goldens, two follow-up investigations, and DeepEval metrics for tool efficiency, answer correctness, and groundedness. Unit/integration tests verify important execution and constraint contracts. | Implemented with limits described below. |
 | Source, setup/run instructions, diagram, approach and mock services/data (p. 5) | README includes native/Docker setup, a Mermaid diagram, policy and feedback explanations, demo steps, configuration and evaluation commands. Fixtures and mock supplier are included. | Present; Docker image build and scripted Compose run verified. |
 | Working demo and `.env.example` (p. 5) | Compose serves UI/API with durable SQLite; `.env.example` defaults to scripted and documents live-provider/judge configuration. Optional Ollama profile supports a real model. | Scripted container demo and a native live-agent evaluation verified. Optional containerized Ollama authentication/model provisioning was documented but not executed. |
-| Public GitHub URL, intact history, no secrets, deadline (p. 5) | No history rewrite or commit was performed. `.env`, operational state, model credentials and generated evaluation reports are excluded from versioning/build context. | Public visibility, submission, deadline and a full repository-history secret audit are not verified. |
+| Public GitHub URL, intact history, no secrets, deadline (p. 5) | No history rewrite or commit was performed. `.env`, operational state, model credentials and generated evaluation reports are excluded from versioning/build context. | GitHub repository visibility is verified as public. It has no branch refs yet; publishing commits, submitting the URL, deadline compliance and an exhaustive history secret audit remain outstanding. |
 
 ## Current checks
 
@@ -59,6 +59,19 @@ The last row is evidence for deterministic enforcement; it does not replace the 
 3. **Disagreement is advisory.** A disagreeing or unavailable independent recommendation does not itself prevent a policy-authorized draft. If all required reads completed, policy can authorize a draft even when final model output is invalid. The UI exposes the comparison and buyer approval remains mandatory. This is a documented assisted-purchasing choice, not a requirement that model and policy must agree.
 4. **Recovery is deliberately bounded.** The agent may propose an eligible alternative, but no new order is automatically placed. An authoritative adapter must supply newer failed-supplier terms; there is no live supplier refresh service or buyer-facing refresh control. Resetting the demo clears its feedback and is not an operational recovery action.
 5. **Mock scope is appropriate to this assignment.** Situations have isolated product/node budgets and storage limits; there is no shared multi-product/node optimizer, production authentication, live ERP/supplier integration, or atomic external purchase transaction. The PDF permits these omissions. Demand freshness uses supplied mock age rather than live feed timestamps.
-6. **Submission remains an operator step.** Verify public repository access and deadline compliance, and show the real-provider path alongside its measured limitations if presenting the system as an LLM agent. Docker is an added reproducibility improvement; it was not mandated by the PDF.
+6. **Submission remains an operator step.** Push the committed source to the verified public repository, submit its URL before the deadline, and show the real-provider path alongside its measured limitations if presenting the system as an LLM agent. Docker is an added reproducibility improvement; it was not mandated by the PDF.
 
 For exact setup and demonstration commands, use the [README](README.md). The current [unit tests](tests/test_unit.py) and [integration tests](tests/test_integration.py) show the checks directly.
+
+## Final submission pass after commit organization
+
+On 2026-10-30, the pending work was committed in focused sections while preserving all six pre-existing commits. A fresh local clone of commit `5cabc94` was checked independently of the development virtual environment, operational database and ignored reports.
+
+- Docker Compose built and started the clone using the copied `.env.example`, a new named volume and isolated localhost port 18080. The process was healthy and ran as UID 10001.
+- All **15 tests passed inside the clean-clone Python 3.12 container**. Host tests, Ruff, JavaScript syntax and Git whitespace checks also passed.
+- All **12 HTTP/persistence checks passed**, including all three purchase flows, budget/storage/no-action cases, explicit approval, stale and rejected drafts, supplier rejection/partial recovery, and restart persistence.
+- All **10 scripted answers** passed the local evaluator with a fixed test judge. As above, fixed groundedness scores establish wiring only.
+- README/assessment local links resolve in the clone. Required source, fixtures, tests, Docker files and `.env.example` are committed. Generated JSON, operational data and `.env` are absent from the checkout. A high-confidence scan of submission files found no token/private-key patterns; this is not an exhaustive secret audit.
+- The existing live report matches the committed prompt and dataset, and agent/policy/evaluator source is unchanged. Its **8/10 independent-answer correctness and 4/10 overall pass result remain the live baseline**; no cloud rerun was needed for packaging-only changes.
+
+**Submission judgment:** the local package is ready to publish as a working assignment demo with the limitations disclosed above. An `origin` remote was configured during the final check: [botARPIT/rappi_assignment_buy_agent](https://github.com/botARPIT/rappi_assignment_buy_agent). GitHub metadata confirms it is **public**, but `git ls-remote --heads origin` returns no branches. **The local commits still need to be pushed and the repository URL submitted.** Deadline compliance remains unverified. The temporary check stack is removed after verification; the original demo is retained.
