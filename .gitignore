@@ -9,3 +9,6 @@ __pycache__/
 playwright-report/
 test-results/
 .tavily/
+/docs/
+# Generated evaluation runs; keep evaluations/dataset.json versioned.
+/evaluations/reports/*.json
