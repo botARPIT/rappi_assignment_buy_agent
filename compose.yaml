@@ -1,0 +1,29 @@
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:${PORT:-8000}:8000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8000"
+      AGENT_PROVIDER: ${AGENT_PROVIDER:-scripted}
+      AGENT_MODEL: ${AGENT_MODEL:-gpt-oss:20b-cloud}
+      OLLAMA_BASE_URL: ${DOCKER_OLLAMA_BASE_URL:-http://ollama:11434}
+      DEEPEVAL_JUDGE_MODEL: ${DEEPEVAL_JUDGE_MODEL:-${AGENT_MODEL:-gpt-oss:20b-cloud}}
+      DEEPEVAL_TELEMETRY_OPT_OUT: "YES"
+    volumes:
+      - purchasing_data:/app/.data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:0.32.13
+    profiles: [ollama]
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  purchasing_data:
+  ollama_data:
