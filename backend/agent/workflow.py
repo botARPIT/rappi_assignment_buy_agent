@@ -16,8 +16,9 @@ from langchain.agents.middleware import (
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
+from backend.purchasing.policy import ACTIONABLE, POLICY_VERSION, REQUIRED_READS
+
 from .llm import build_model
-from .policy import ACTIONABLE, POLICY_VERSION, REQUIRED_READS
 from .prompts import SYSTEM_PROMPT
 from .review import compare_recommendations, parse_recommendation
 from .tools import PurchasingTools

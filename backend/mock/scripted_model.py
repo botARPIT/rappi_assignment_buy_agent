@@ -7,7 +7,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from backend.action_feedback import supplier_requires_refresh
+from backend.purchasing.feedback import supplier_requires_refresh
 
 
 def _scripted_independent_review(tool_messages):

@@ -7,10 +7,11 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from backend.action_feedback import build_action_feedback
-from backend.agent.data import get_cases
-from backend.agent.policy import ACTIONABLE, assess_purchase, matches_authorization
-from backend.supplier import submit_order, validate_response
+from backend.mock.fixtures import get_cases
+from backend.mock.supplier import submit_order
+from backend.purchasing.feedback import build_action_feedback
+from backend.purchasing.policy import ACTIONABLE, assess_purchase, matches_authorization
+from backend.purchasing.supplier import validate_response
 
 
 class ConflictError(ValueError):

@@ -16,8 +16,8 @@ from deepeval.test_case import LLMTestCase
 from dotenv import load_dotenv
 
 from backend.agent.agent import PurchasingAgent
-from backend.agent.data import get_cases
-from backend.agent.policy import POLICY_VERSION
+from backend.mock.fixtures import get_cases
+from backend.purchasing.policy import POLICY_VERSION
 from backend.store import Store
 from evaluations.metrics import (
     EVIDENCE_TOOLS,

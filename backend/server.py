@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from backend.agent.agent import PurchasingAgent
-from backend.agent.data import get_cases
+from backend.mock.fixtures import get_cases
 from backend.store import ConflictError, Store
 
 ROOT = Path(__file__).resolve().parents[1]

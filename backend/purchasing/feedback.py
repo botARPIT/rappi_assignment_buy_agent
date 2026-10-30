@@ -1,6 +1,6 @@
 """Build supplier-outcome evidence and prevent repeating failed purchasing terms."""
 
-from backend.agent.models import ActionFeedback
+from backend.purchasing.models import ActionFeedback
 
 
 def _nonnegative_integer(value) -> int | None:

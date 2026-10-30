@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from langchain.tools import tool
 
-from .policy import ACTIONABLE, REQUIRED_READS, assess_purchase, result
+from backend.purchasing.policy import ACTIONABLE, REQUIRED_READS, assess_purchase, result
 
 
 class PurchasingTools:

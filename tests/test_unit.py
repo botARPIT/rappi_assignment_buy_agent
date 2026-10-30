@@ -4,10 +4,11 @@ import pytest
 from deepeval.test_case import LLMTestCase
 from pydantic import ValidationError
 
-from backend.agent.data import get_cases
-from backend.agent.policy import assess_purchase
 from backend.agent.review import compare_recommendations, parse_recommendation
-from backend.supplier import submit_order, validate_response
+from backend.mock.fixtures import get_cases
+from backend.mock.supplier import submit_order
+from backend.purchasing.policy import assess_purchase
+from backend.purchasing.supplier import validate_response
 from evaluations.metrics import EVIDENCE_TOOLS, AnswerCorrectnessMetric, ToolEfficiencyMetric
 
 

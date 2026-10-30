@@ -4,9 +4,9 @@ import pytest
 from deepeval.models import DeepEvalBaseLLM
 
 from backend.agent.agent import PurchasingAgent
-from backend.agent.data import get_cases
-from backend.agent.policy import assess_purchase
 from backend.agent.tools import PurchasingTools
+from backend.mock.fixtures import get_cases
+from backend.purchasing.policy import assess_purchase
 from backend.store import ConflictError
 from evaluations.run_eval import run
 

@@ -5,7 +5,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from backend.action_feedback import supplier_requires_refresh
+from backend.purchasing.feedback import supplier_requires_refresh
 
 from .scenario_policies import (
     BASE_POLICY_ID,

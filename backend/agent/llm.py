@@ -4,7 +4,7 @@ import os
 
 from langchain_ollama import ChatOllama
 
-from .scripted_model import ScriptedPurchasingModel
+from backend.mock.scripted_model import ScriptedPurchasingModel
 
 
 def build_model(provider=None):
